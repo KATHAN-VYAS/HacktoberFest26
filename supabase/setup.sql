@@ -54,13 +54,40 @@ create table if not exists public.tc_rate_limits (
  user_id text not null, category text not null, window_start bigint not null, hits int not null,
  primary key(user_id,category,window_start)
 );
+create table if not exists public.tc_conversations (
+ id text primary key, requester_id text not null references public.tc_profiles(id) on delete cascade,
+ recipient_id text not null references public.tc_profiles(id) on delete cascade,
+ status text not null default 'pending' check(status in ('pending','accepted','declined','blocked')),
+ created_at bigint not null default (extract(epoch from clock_timestamp())*1000)::bigint,
+ updated_at bigint not null default (extract(epoch from clock_timestamp())*1000)::bigint,
+ check(requester_id<>recipient_id), unique(requester_id,recipient_id)
+);
+create table if not exists public.tc_messages (
+ id text primary key, conversation_id text not null references public.tc_conversations(id) on delete cascade,
+ sender_id text not null references public.tc_profiles(id) on delete cascade,
+ body text not null check(length(body) between 1 and 2000),
+ created_at bigint not null default (extract(epoch from clock_timestamp())*1000)::bigint
+);
+create table if not exists public.tc_message_reports (
+ id text primary key, reporter_id text not null references public.tc_profiles(id) on delete cascade,
+ message_id text not null references public.tc_messages(id) on delete cascade,
+ reason text not null check(length(reason) between 4 and 500),
+ created_at bigint not null default (extract(epoch from clock_timestamp())*1000)::bigint
+);
+create table if not exists public.tc_blocks (
+ blocker_id text not null references public.tc_profiles(id) on delete cascade,
+ blocked_id text not null references public.tc_profiles(id) on delete cascade,
+ created_at bigint not null default (extract(epoch from clock_timestamp())*1000)::bigint,
+ primary key(blocker_id,blocked_id), check(blocker_id<>blocked_id)
+);
+create unique index if not exists tc_conversation_pair_unique on public.tc_conversations(least(requester_id,recipient_id),greatest(requester_id,recipient_id));
 create index if not exists tc_posts_created on public.tc_posts(created_at desc);
 create index if not exists tc_posts_author on public.tc_posts(author_id,created_at desc);
 create index if not exists tc_replies_post on public.tc_replies(post_id,created_at);
 
 -- No browser policies: all reads/writes go through our server after auth.getUser().
 do $$ declare t text; begin
- foreach t in array array['profiles','groups','memberships','posts','replies','votes','bookmarks','reports','knowledge','rate_limits'] loop
+ foreach t in array array['profiles','groups','memberships','posts','replies','votes','bookmarks','reports','knowledge','rate_limits','conversations','messages','message_reports','blocks'] loop
   execute format('alter table public.tc_%I enable row level security',t);
   execute format('revoke all on public.tc_%I from anon, authenticated',t);
   execute format('grant all on public.tc_%I to service_role',t);
@@ -151,6 +178,12 @@ declare v_post tc_posts; result jsonb; begin
    'author',case when p.anonymous then 'Anonymous Terp' else u.username end),p.created_at
   from tc_posts p join tc_profiles u on u.id=p.author_id where p.status='community' and p.type='Question' and not p.sample and p.author_id<>p_user_id
   order by created_at desc limit 12) n),'[]') end,
+ 'messages',case when p_user_id is null then '[]'::jsonb else coalesce((select jsonb_agg(jsonb_build_object(
+  'id',c.id,'status',c.status,'otherUsername',case when c.requester_id=p_user_id then recipient.username else requester.username end,
+  'incoming',c.recipient_id=p_user_id,'updatedAt',c.updated_at,
+  'lastMessage',(select body from tc_messages where conversation_id=c.id order by created_at desc limit 1),
+  'items',coalesce((select jsonb_agg(jsonb_build_object('id',m.id,'body',m.body,'mine',m.sender_id=p_user_id,'createdAt',m.created_at) order by m.created_at) from tc_messages m where m.conversation_id=c.id),'[]')
+ ) order by c.updated_at desc) from tc_conversations c join tc_profiles requester on requester.id=c.requester_id join tc_profiles recipient on recipient.id=c.recipient_id where p_user_id in (c.requester_id,c.recipient_id) and c.status in ('pending','accepted')),'[]') end,
  'requiresSignIn',p_user_id is null) into result;
  return result;
 end $$;
@@ -162,7 +195,7 @@ declare a text:=p_data->>'action'; p tc_posts; new_id text:=gen_random_uuid()::t
  v_title text:=trim(p_data->>'title'); v_body text:=trim(coalesce(p_data->>'body',''));
  v_group text:=coalesce(nullif(p_data->>'groupId',''),'campus'); v_type text:=p_data->>'type';
  v_name text:=trim(p_data->>'name'); v_username text:=trim(p_data->>'username');
- v_parent text:=nullif(p_data->>'parentId',''); ask boolean;
+ v_parent text:=nullif(p_data->>'parentId',''); ask boolean; v_other text; v_conversation text; v_message text:=trim(coalesce(p_data->>'body',''));
 begin
  if p_user_id is null or p_user_id='' then raise exception using errcode='28000',message='Sign in to join the conversation.'; end if;
  perform tc_ensure_profile(p_user_id);
@@ -174,6 +207,46 @@ begin
  elsif a='onboarding' then
   if jsonb_typeof(p_data->'onboarding')<>'object' then raise exception 'Onboarding progress must be an object.'; end if;
   update tc_profiles set onboarding=onboarding || p_data->'onboarding' where id=p_user_id;
+ elsif a='message-request' then
+  if v_username is null then raise exception 'Choose a Terp to contact.'; end if;
+  select id into v_other from tc_profiles where lower(username)=lower(v_username);
+  if v_other is null or v_other=p_user_id then raise exception 'That Terp is unavailable.'; end if;
+  if exists(select 1 from tc_blocks where (blocker_id=p_user_id and blocked_id=v_other) or (blocker_id=v_other and blocked_id=p_user_id)) then raise exception 'This conversation is unavailable.'; end if;
+  perform tc_limit(p_user_id,'message-requests',5);
+  insert into tc_conversations(id,requester_id,recipient_id) values(new_id,p_user_id,v_other) on conflict do nothing;
+  return jsonb_build_object('ok',true,'id',new_id);
+ elsif a='message-decision' then
+  v_conversation:=p_data->>'conversationId';
+  if p_data->>'decision'='accept' then
+   update tc_conversations set status='accepted',updated_at=(extract(epoch from clock_timestamp())*1000)::bigint where id=v_conversation and recipient_id=p_user_id and status='pending';
+  elsif p_data->>'decision'='decline' then
+   update tc_conversations set status='declined',updated_at=(extract(epoch from clock_timestamp())*1000)::bigint where id=v_conversation and recipient_id=p_user_id and status='pending';
+  else raise exception 'Choose accept or decline.'; end if;
+  if not found then raise exception using errcode='42501',message='This request is unavailable.'; end if;
+  return jsonb_build_object('ok',true);
+ elsif a='message-send' then
+  v_conversation:=p_data->>'conversationId';
+  if length(v_message) not between 1 and 2000 then raise exception 'Messages must be 1–2,000 characters.'; end if;
+  if not exists(select 1 from tc_conversations c where c.id=v_conversation and c.status='accepted' and p_user_id in (c.requester_id,c.recipient_id)
+    and not exists(select 1 from tc_blocks b where (b.blocker_id=p_user_id and b.blocked_id=case when c.requester_id=p_user_id then c.recipient_id else c.requester_id end) or (b.blocker_id=case when c.requester_id=p_user_id then c.recipient_id else c.requester_id end and b.blocked_id=p_user_id))) then raise exception using errcode='42501',message='This conversation is unavailable.'; end if;
+  perform tc_limit(p_user_id,'messages',30);
+  insert into tc_messages(id,conversation_id,sender_id,body) values(new_id,v_conversation,p_user_id,v_message);
+  update tc_conversations set updated_at=(extract(epoch from clock_timestamp())*1000)::bigint where id=v_conversation;
+  return jsonb_build_object('ok',true,'id',new_id);
+ elsif a='message-report' then
+  v_conversation:=p_data->>'conversationId';
+  if length(trim(coalesce(p_data->>'reason',''))) not between 4 and 500 then raise exception 'Report reason must be 4–500 characters.'; end if;
+  if not exists(select 1 from tc_messages m join tc_conversations c on c.id=m.conversation_id where m.id=p_data->>'messageId' and c.id=v_conversation and p_user_id in (c.requester_id,c.recipient_id)) then raise exception using errcode='42501',message='Message unavailable.'; end if;
+  perform tc_limit(p_user_id,'message-reports',8);
+  insert into tc_message_reports(id,reporter_id,message_id,reason) values(new_id,p_user_id,p_data->>'messageId',trim(p_data->>'reason'));
+  return jsonb_build_object('ok',true);
+ elsif a='message-block' then
+  v_conversation:=p_data->>'conversationId';
+  select case when requester_id=p_user_id then recipient_id else requester_id end into v_other from tc_conversations where id=v_conversation and p_user_id in (requester_id,recipient_id);
+  if v_other is null then raise exception using errcode='42501',message='This conversation is unavailable.'; end if;
+  insert into tc_blocks(blocker_id,blocked_id) values(p_user_id,v_other) on conflict do nothing;
+  update tc_conversations set status='blocked',updated_at=(extract(epoch from clock_timestamp())*1000)::bigint where id=v_conversation;
+  return jsonb_build_object('ok',true);
  elsif a in ('post','ask') then
   ask:=a='ask' or coalesce(v_type='Question',false);
   if v_title is null or length(v_title) not between 8 and 220 then raise exception 'Title must be 8–220 characters.'; end if;
