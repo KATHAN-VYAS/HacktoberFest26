@@ -58,10 +58,12 @@ create table if not exists public.tc_conversations (
  id text primary key, requester_id text not null references public.tc_profiles(id) on delete cascade,
  recipient_id text not null references public.tc_profiles(id) on delete cascade,
  status text not null default 'pending' check(status in ('pending','accepted','declined','blocked')),
+ accepted_at bigint,
  created_at bigint not null default (extract(epoch from clock_timestamp())*1000)::bigint,
  updated_at bigint not null default (extract(epoch from clock_timestamp())*1000)::bigint,
  check(requester_id<>recipient_id), unique(requester_id,recipient_id)
 );
+alter table public.tc_conversations add column if not exists accepted_at bigint;
 create table if not exists public.tc_messages (
  id text primary key, conversation_id text not null references public.tc_conversations(id) on delete cascade,
  sender_id text not null references public.tc_profiles(id) on delete cascade,
@@ -177,6 +179,13 @@ declare v_post tc_posts; result jsonb; begin
   union all select jsonb_build_object('id','question-'||p.id,'kind','question','body',p.body,'created_at',p.created_at,'post_id',p.id,'title',p.title,
    'author',case when p.anonymous then 'Anonymous Terp' else u.username end),p.created_at
   from tc_posts p join tc_profiles u on u.id=p.author_id where p.status='community' and p.type='Question' and not p.sample and p.author_id<>p_user_id
+  union all select jsonb_build_object('id','chat-request-'||c.id,'kind','chat-request','body','wants to start a private conversation.','created_at',c.created_at,'title','Conversation request','author',requester.username,'conversation_id',c.id),c.created_at
+  from tc_conversations c join tc_profiles requester on requester.id=c.requester_id where c.recipient_id=p_user_id and c.status='pending'
+  union all select jsonb_build_object('id','chat-accepted-'||c.id,'kind','chat-accepted','body','Your conversation request was accepted.','created_at',c.accepted_at,'title','Conversation accepted','author',recipient.username,'conversation_id',c.id),c.accepted_at
+  from tc_conversations c join tc_profiles recipient on recipient.id=c.recipient_id where c.requester_id=p_user_id and c.status='accepted' and c.accepted_at is not null
+  union all select jsonb_build_object('id','chat-message-'||m.id,'kind','chat-message','body',m.body,'created_at',m.created_at,'title','Private message','author',sender.username,'conversation_id',c.id),m.created_at
+  from tc_messages m join tc_conversations c on c.id=m.conversation_id join tc_profiles sender on sender.id=m.sender_id
+  where p_user_id in (c.requester_id,c.recipient_id) and m.sender_id<>p_user_id and c.status='accepted'
   order by created_at desc limit 12) n),'[]') end,
  'messages',case when p_user_id is null then '[]'::jsonb else coalesce((select jsonb_agg(jsonb_build_object(
   'id',c.id,'status',c.status,'otherUsername',case when c.requester_id=p_user_id then recipient.username else requester.username end,
@@ -218,7 +227,7 @@ begin
  elsif a='message-decision' then
   v_conversation:=p_data->>'conversationId';
   if p_data->>'decision'='accept' then
-   update tc_conversations set status='accepted',updated_at=(extract(epoch from clock_timestamp())*1000)::bigint where id=v_conversation and recipient_id=p_user_id and status='pending';
+   update tc_conversations set status='accepted',accepted_at=(extract(epoch from clock_timestamp())*1000)::bigint,updated_at=(extract(epoch from clock_timestamp())*1000)::bigint where id=v_conversation and recipient_id=p_user_id and status='pending';
   elsif p_data->>'decision'='decline' then
    update tc_conversations set status='declined',updated_at=(extract(epoch from clock_timestamp())*1000)::bigint where id=v_conversation and recipient_id=p_user_id and status='pending';
   else raise exception 'Choose accept or decline.'; end if;
