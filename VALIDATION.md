@@ -1,37 +1,13 @@
 # Validation record
 
-Checked October 25, 2026 on Windows, Node.js 22.18.0.
+Checked October 25, 2026 on Windows, Node.js 22.18.0. This record covers the current Next.js/Supabase migration. Earlier D1 preview checks do not establish real multi-account behavior.
 
-- TypeScript checking passed (`npx tsc --noEmit`).
-- Production Worker build passed through the Sites build helper.
-- 26 local integration checks passed, including unauthenticated-write rejection, cross-origin rejection, public/private question separation, anonymous identifier redaction, community escalation, unknown-question fallback, parent-thread validation, idempotent votes, saved-state privacy, ownership checks, and membership persistence.
-- Retrieval/provider-contract checks passed. Gemini responses were mocked, including a provider outage, abstention, and a supported answer. No live Gemini request was made and no real API key was configured.
-- Browser verification in the Codex in-app browser covered sign-in simulation, an anonymous Pantry question, source links, private-answer status, community escalation, an anonymous reply, mobile navigation, and creating a community with automatic membership. The narrow layout was visually inspected. Desktop breakpoints are implemented but were not visually audited in a full-width browser.
-- Local and hosted databases are distinct. Hosted deployment has not occurred: automatic approval review rejected source upload to the external private Sites project, pending the user's explicit authorization.
+- Production Next.js build passed with Webpack, including TypeScript and all pages/API routes. Turbopack failed to start its CSS helper on this Windows installation, so the supported Webpack compiler is selected in dev/build scripts.
+- 28 checks passed against the actual PostgreSQL schema/functions in PGlite with service_role, anon and authenticated roles. Covered two-user posting/replies, anonymous redaction, private draft isolation, explicit community sharing, owner-only changes, source metadata, case-insensitive usernames, vote deduplication, bookmarks, memberships, cascade deletion, AI call limits, and denial of browser SQL/RPC access. Setup was applied twice to check repeatability.
+- AI retrieval/provider contract and web-grounding regression suites passed. Provider responses were mocked, with no live Gemini call in this validation. Existing local Gemini credentials were carried into ignored .env.local without printing them.
+- 4 local HTTP checks passed: login page, missing-configuration message, and cross-origin rejection for both write endpoints. The sign-in/create-account toggle and desktop layout were also checked in the browser. No account was submitted from that browser check.
+- No configured private key was found in 175 tracked/new source files or generated browser assets. The private .env.local file is ignored by Git.
+- Live Supabase validation is pending the owner's project URL/keys and execution of supabase/setup.sql. The hosted smoke suite is ready to create two temporary confirmed users, sign in through the actual app, exercise shared posts/replies/privacy/ownership, and remove its records. It sends no emails and makes no Gemini requests.
+- Vercel deployment is deferred at the owner's request.
 
-Not validated: real multi-account hosted interaction, live Gemini availability, UMD enrollment verification, production concurrency/load, notification delivery guarantees, a complete accessibility audit, or a staffed moderation workflow. No campus-wide student directory or email broadcast is connected.
-
-
-## Live Gemini configuration check
-
-The local app successfully loaded the user-supplied key from the ignored `.dev.vars` file. The key was neither printed nor committed. Gemini 2.5 Flash returned HTTP 404 for this new-user key, recommending Gemini 3.8 Flash. The model setting and default were updated accordingly. Subsequent Gemini requests returned HTTP 503 (high demand) or timed out; no successful live generated answer was observed. The local app returned its labeled source-summary fallback correctly. Generation now requests low thinking for Gemini 3 models and permits up to 30 seconds. Provider-contract tests and TypeScript checks passed after the change. The connection-test questions were removed from the local database.
-
-
-## Latest AI-answer repair (October 25, 2026)
-
-Resolved the earlier Gemini limitation by configuring gemini-3.5-flash-lite, which returned a successful real generated answer to the user's exact CS / AI professor question. The earlier 3.8 failure record describes the previous configuration.
-
-Removed the topic keyword bypass (including professor and roommate), improved abbreviation/plural matching, added the official CS faculty directory, Clark Hall directions, and campus map summaries, and synchronized these records into the existing database without resetting community data. Both question composers now use the answer-first server path. Provider failures are labeled by category and authors can retry the same question.
-
-The user's exact current-weather question returned fresh Open-Meteo campus-area conditions and an observation time. Weather service outages and stale observations keep the question private and never fabricate conditions. The existing public test threads retained their visibility when retried; new supported questions remain private.
-
-29 integration checks, provider/retrieval/weather regressions, and TypeScript checks passed. Browser verification confirmed a real Gemini faculty answer with its official source, and the Retry AI answer control refreshed the same thread successfully. No hosting upload was attempted.
-
-
-## Search and general-answer repair
-
-Removed the empty-index early return. Questions can now attempt Google Search grounding, then use saved-source generation or clearly labeled general AI guidance. Uncertain answers and provider outages remain private until the author chooses to share. Structured Google grounding citations, safe source URLs, and required Search Suggestions are preserved; suggestions run in a sandboxed frame with scripts disabled. The stored source envelope remains compatible with older array-format records.
-
-Live tests of the screenshot housing question and main-campus-area question returned useful Gemini answers. The area answer cited the 2023 Facilities source and reported 1,347 acres (about 5.45 square kilometers), retaining its reporting date. Google Search grounding returned HTTP 429 for this key while normal Gemini requests returned HTTP 200, so a successful live Search-grounded answer was not observed. The app shows that limitation. Positive search metadata/citation behavior was tested with mocked provider responses.
-
-The retrieval/provider/weather tests, new grounding/general-answer regressions, TypeScript checks, and all 29 integration checks passed. GitHub publication was explicitly requested by the user after these repairs. No API key, runtime database, or local identity data is intended for the GitHub commit.
+Not yet verified: real project credentials/schema, hosted multi-account interaction, email delivery, production load, account recovery, UMD enrollment, or a full accessibility audit.

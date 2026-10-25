@@ -46,3 +46,6 @@ yarn-error.log*
 
 # Safe configuration template
 !.dev.vars.example
+
+!.env.example
+/test-results/

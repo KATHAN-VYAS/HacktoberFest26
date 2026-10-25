@@ -1,5 +1,7 @@
 import { AppError, readCommunity, mutateCommunity } from "@/lib/community";
 export const dynamic="force-dynamic";
+export const runtime="nodejs";
+export const maxDuration=60;
 function json(data: unknown,status=200) { return Response.json(data,{status,headers:{"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}}); }
 function failure(error: unknown) {
   if(error instanceof AppError) return json({error:error.message},error.status);
