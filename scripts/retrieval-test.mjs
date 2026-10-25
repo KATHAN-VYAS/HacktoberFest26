@@ -1,0 +1,36 @@
+import assert from "node:assert/strict";
+import { retrieve,answerQuestion } from "../lib/retrieval.ts";
+import { seedKnowledge } from "../lib/seed.ts";
+const docs=seedKnowledge.map(s=>({...s,checkedAt:"2026-10-25"}));
+assert.equal(retrieve("How do I find accessible routes and avoid stairs?",docs)[0]?.id,"access");
+assert.equal(retrieve("Can I donate groceries to the pantry?",docs)[0]?.id,"pantry");
+assert.deepEqual(retrieve("Where can I buy a unicorn submarine?",docs),[]);
+assert.equal(retrieve("tell me more bout professor of CS department who are working in the AI domain",docs)[0]?.id,"cs-ai-faculty");
+assert.equal(retrieve("How can I reach A James Clark Hall from Tulane Drive",docs)[0]?.id,"clark-directions");
+assert.equal((await answerQuestion("Which CS professors work in AI?",docs,{})).status,"private");
+assert.equal((await answerQuestion("How do I find roommates?",docs,{})).status,"private");
+const supported=await answerQuestion("How do I use the Campus Pantry?",docs,{});
+assert.equal(supported.mode,"retrieval");assert.equal(supported.status,"private");assert.ok(supported.sources.length>0);
+const original=globalThis.fetch;
+try{
+ globalThis.fetch=async()=>new Response("unavailable",{status:503});
+ assert.equal((await answerQuestion("How do I use the Campus Pantry?",docs,{GEMINI_API_KEY:"test-only"})).mode,"retrieval-fallback:busy");
+ globalThis.fetch=async()=>Response.json({candidates:[{content:{parts:[{text:JSON.stringify({supported:false,answer:""})}]}}]});
+ assert.equal((await answerQuestion("How do I use the Campus Pantry?",docs,{GEMINI_API_KEY:"test-only"})).status,"private");
+ globalThis.fetch=async()=>Response.json({candidates:[{content:{parts:[{text:JSON.stringify({supported:true,answer:"Bring your current UID and check the official Pantry page for current hours. [1]"})}]}}]});
+ assert.equal((await answerQuestion("How do I use the Campus Pantry?",docs,{GEMINI_API_KEY:"test-only"})).mode,"gemini");
+ let modelCalled=false;
+ globalThis.fetch=async()=>{modelCalled=true;return Response.json({candidates:[{content:{parts:[{text:JSON.stringify({supported:true,answer:"The directory lists Hal Daume III and Furong Huang among AI researchers. [1]"})}]}}]});};
+ assert.equal((await answerQuestion("Which CS professors work in AI?",docs,{GEMINI_API_KEY:"test-only"})).mode,"gemini");
+ assert.ok(modelCalled,"Faculty keyword must not bypass Gemini");
+ const current=new Date();const localTime=new Date(current.getTime()-4*3600000).toISOString().slice(0,16);
+ globalThis.fetch=async()=>Response.json({utc_offset_seconds:-14400,current:{time:localTime,temperature_2m:64,apparent_temperature:62,weather_code:0,wind_speed_10m:3}});
+ const weather=await answerQuestion("what is the current weather at the UMD campus?",docs,{});
+ assert.equal(weather.mode,"live-weather");assert.equal(weather.status,"private");assert.ok(weather.answer.includes("64°F"));assert.equal(weather.sources[0].live,true);
+ globalThis.fetch=async()=>Response.json({utc_offset_seconds:-14400,current:{time:"2000-01-01T10:00",temperature_2m:64,apparent_temperature:62,weather_code:0,wind_speed_10m:3}});
+ assert.equal((await answerQuestion("Current weather at UMD?",docs,{})).mode,"live-weather-unavailable","Stale weather must not be presented as current");
+ globalThis.fetch=async()=>{throw new Error("offline");};
+ const failedWeather=await answerQuestion("Current weather at UMD?",docs,{});
+ assert.equal(failedWeather.mode,"live-weather-unavailable");assert.equal(failedWeather.status,"private","Weather outage must not publish a question");
+}finally{globalThis.fetch=original;}
+console.log("Retrieval and provider-contract checks passed. Provider responses were mocked; no live Gemini request was made.");

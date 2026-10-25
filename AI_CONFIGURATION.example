@@ -1,0 +1,4 @@
+# Copy these lines into an untracked .dev.vars file, then restart local preview.
+# Configure the same names as private server environment variables when hosting.
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.5-flash-lite

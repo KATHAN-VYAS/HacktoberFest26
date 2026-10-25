@@ -1,0 +1,4 @@
+# Copy to .dev.vars and insert your own Gemini key. Do not commit .dev.vars.
+GEMINI_API_KEY=replace_with_your_key
+GEMINI_MODEL=gemini-3.5-flash-lite
+GEMINI_WEB_SEARCH=true

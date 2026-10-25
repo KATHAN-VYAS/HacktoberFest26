@@ -1,0 +1,5 @@
+export type Group={id:string;name:string;description:string;color:string;icon:string;members:number;joined:boolean};
+export type Source={id:string;title:string;url:string;checkedAt:string;content?:string;live?:boolean};
+export type Post={id:string;groupId:string;groupName:string;groupColor:string;groupIcon:string;type:string;title:string;body:string;anonymous:boolean;author:string;stage:string;mine:boolean;status:string;aiAnswer:string|null;aiMode:string|null;aiNotice?:string;grounding?:{suggestionsHtml:string;queries:string[]};sources:Source[];sample:boolean;createdAt:number;replies:number;votes:number;voted:boolean;saved:boolean};
+export type Reply={id:string;postId:string;parentId:string|null;body:string;author:string;stage:string;anonymous:boolean;mine:boolean;createdAt:number};
+export type Bootstrap={profile:{username:string;stage:string}|null;posts:Post[];groups:Group[];knowledge:Source[];stats:{members:number;posts:number};notifications:{id:string;kind?:string;body:string;created_at:number;post_id:string;title:string;author:string}[];aiConfigured:boolean;requiresSignIn:boolean};
