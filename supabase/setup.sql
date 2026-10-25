@@ -1,11 +1,13 @@
 -- TerpCommons: server-only data API. Browser keys can use Auth but cannot read tables.
 begin;
 create table if not exists public.tc_profiles (
- id text primary key, username text not null, stage text not null default 'Current student',
+ id text primary key, username text not null, stage text not null default 'Current student', bio text not null default '', onboarding jsonb not null default '{}'::jsonb,
  created_at bigint not null default (extract(epoch from clock_timestamp())*1000)::bigint,
  check (username ~ '^[a-zA-Z0-9_]{3,24}$'),
  check (stage in ('Incoming student','Current student','Senior','Graduate student','Alum'))
 );
+alter table public.tc_profiles add column if not exists bio text not null default '';
+alter table public.tc_profiles add column if not exists onboarding jsonb not null default '{}'::jsonb;
 create unique index if not exists tc_username_unique on public.tc_profiles(lower(username));
 create table if not exists public.tc_groups (
  id text primary key, name text not null, description text not null, color text not null default 'sage',
@@ -72,6 +74,28 @@ language plpgsql set search_path=public as $$ begin
  end if;
 end $$;
 
+create or replace function public.tc_badge_count(p_user_id text) returns int
+language sql stable set search_path=public as $$
+ select (case when (select count(*) from tc_replies where author_id=p_user_id)>=1 then 1 else 0 end)
+      + (case when (select count(*) from tc_replies where author_id=p_user_id)>=3 then 1 else 0 end)
+      + (case when exists(select 1 from tc_groups where owner_id=p_user_id) then 1 else 0 end)
+      + (case when (select count(*) from tc_replies where author_id=p_user_id)>=5 then 1 else 0 end)
+$$;
+
+create or replace function public.tc_profile_json(p_user_id text) returns jsonb
+language sql stable set search_path=public as $$
+ select jsonb_build_object(
+  'username',p.username,'stage',p.stage,'bio',p.bio,'helpedCount',(select count(*) from tc_replies where author_id=p.id),
+  'onboarding',p.onboarding,
+  'badges',jsonb_build_array(
+   jsonb_build_object('id','first-reply','label','First Reply','description','Shared your first helpful answer','earned',(select count(*) from tc_replies where author_id=p.id)>=1),
+   jsonb_build_object('id','helpful-terp','label','Helpful Terp','description','Helped three fellow Terps','earned',(select count(*) from tc_replies where author_id=p.id)>=3),
+   jsonb_build_object('id','community-builder','label','Community Builder','description','Started a space for shared interests','earned',exists(select 1 from tc_groups where owner_id=p.id)),
+   jsonb_build_object('id','welcome-guide','label','Welcome Guide','description','Helped five fellow Terps','earned',(select count(*) from tc_replies where author_id=p.id)>=5)
+  ))
+ from tc_profiles p where p.id=p_user_id
+$$;
+
 create or replace function public.tc_limit(p_user_id text,p_category text,p_max int) returns void
 language plpgsql set search_path=public as $$
 declare n int; w bigint := floor(extract(epoch from clock_timestamp())/60); begin
@@ -87,7 +111,7 @@ language sql stable set search_path=public as $$
  'id',p.id,'groupId',p.group_id,'groupName',g.name,'groupColor',g.color,'groupIcon',g.icon,
  'type',p.type,'title',p.title,'body',p.body,'anonymous',p.anonymous,
  'author',case when p.anonymous then 'Anonymous Terp' else u.username end,
- 'stage',case when p.anonymous then '' else u.stage end,'mine',coalesce(p.author_id=p_user_id,false),
+ 'stage',case when p.anonymous then '' else u.stage end,'authorBadgeCount',case when p.anonymous then 0 else tc_badge_count(p.author_id) end,'mine',coalesce(p.author_id=p_user_id,false),
  'status',p.status,'aiAnswer',p.ai_answer,'aiMode',p.ai_mode,
  'sources',case when jsonb_typeof(p.sources)='array' then p.sources else coalesce(p.sources->'items','[]') end,
  'grounding',p.sources->'grounding','aiNotice',p.sources->'notice','sample',p.sample,'createdAt',p.created_at,
@@ -107,11 +131,11 @@ declare v_post tc_posts; result jsonb; begin
   return jsonb_build_object('post',tc_post_json(v_post,p_user_id),'replies',coalesce((
    select jsonb_agg(jsonb_build_object('id',r.id,'postId',r.post_id,'parentId',r.parent_id,'body',r.body,
    'author',case when r.anonymous then 'Anonymous Terp' else u.username end,
-   'stage',case when r.anonymous then '' else u.stage end,'anonymous',r.anonymous,'mine',coalesce(r.author_id=p_user_id,false),'createdAt',r.created_at) order by r.created_at)
+   'stage',case when r.anonymous then '' else u.stage end,'authorBadgeCount',case when r.anonymous then 0 else tc_badge_count(r.author_id) end,'anonymous',r.anonymous,'mine',coalesce(r.author_id=p_user_id,false),'createdAt',r.created_at) order by r.created_at)
    from tc_replies r join tc_profiles u on u.id=r.author_id where r.post_id=v_post.id),'[]'));
  end if;
  select jsonb_build_object(
- 'profile',(select jsonb_build_object('username',username,'stage',stage) from tc_profiles where id=p_user_id),
+ 'profile',tc_profile_json(p_user_id),
  'posts',coalesce((select jsonb_agg(tc_post_json(q,p_user_id) order by q.created_at desc) from (
   select * from tc_posts where status='community' or author_id=p_user_id order by created_at desc limit 200) q),'[]'),
  'groups',coalesce((select jsonb_agg(jsonb_build_object('id',g.id,'name',g.name,'description',g.description,'color',g.color,'icon',g.icon,
@@ -146,7 +170,10 @@ begin
  perform 1 from tc_profiles where id=p_user_id for update;
  if a='profile' then
   if v_username is null or v_username !~ '^[a-zA-Z0-9_]{3,24}$' then raise exception 'Use 3–24 letters, numbers, or underscores in your username.'; end if;
-  update tc_profiles set username=v_username,stage=p_data->>'stage' where id=p_user_id;
+  update tc_profiles set username=v_username,stage=p_data->>'stage',bio=left(coalesce(p_data->>'bio',''),280) where id=p_user_id;
+ elsif a='onboarding' then
+  if jsonb_typeof(p_data->'onboarding')<>'object' then raise exception 'Onboarding progress must be an object.'; end if;
+  update tc_profiles set onboarding=onboarding || p_data->'onboarding' where id=p_user_id;
  elsif a in ('post','ask') then
   ask:=a='ask' or coalesce(v_type='Question',false);
   if v_title is null or length(v_title) not between 8 and 220 then raise exception 'Title must be 8–220 characters.'; end if;
