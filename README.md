@@ -2,6 +2,9 @@
 
 A student-built UMD community: ask AI privately, then choose whether to share a question with other Terps. Students can post discussions, updates and events, answer threads, create communities, and post anonymously behind a private account.
 
+## Demo
+Live webapplication: https://hacktober-fest26.vercel.app/
+
 ## Run locally
 
 1. Install Node.js 22.13+ and run `npm install`.
